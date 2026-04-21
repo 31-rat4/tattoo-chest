@@ -12,6 +12,7 @@ const MORSE = {
 let THEME = { bg: 0, fg: 255 };
 let INVERT_BODIES = false;
 let HIDE_SUN_STROKE = false;
+let SHOW_FRACTAL = true;
 
 class MorseEncoder {
   static encode(text) {
@@ -35,14 +36,88 @@ class Moon {
     this.x = x;
     this.y = y;
     this.diameter = diameter;
+    this.fractalBuffer = null;
+    this.bufferKey = null;
+    this.fractalZoom = 1.0;
   }
 
-  draw() {
+  setFractalZoom(zoom) {
+    this.fractalZoom = zoom;
+  }
+
+  drawFill() {
+    const moonFill = INVERT_BODIES ? THEME.bg : THEME.fg;
     push();
-    fill(INVERT_BODIES ? THEME.bg : THEME.fg);
+    fill(moonFill);
     noStroke();
     circle(this.x, this.y, this.diameter);
     pop();
+  }
+
+  drawFractal() {
+    if (!SHOW_FRACTAL) return;
+    const contrast = INVERT_BODIES ? THEME.fg : THEME.bg;
+    this.#ensureBuffer(contrast);
+    push();
+    imageMode(CORNER);
+    const r = this.diameter / 2;
+    image(this.fractalBuffer, this.x - r, this.y - r, this.diameter, this.diameter);
+    pop();
+  }
+
+  draw() {
+    this.drawFill();
+    this.drawFractal();
+  }
+
+  #ensureBuffer(contrast) {
+    const key = `${contrast}|${this.fractalZoom}`;
+    if (this.bufferKey === key && this.fractalBuffer) return;
+    this.bufferKey = key;
+
+    const SIZE = 256;
+    const MAX_ITER = 100;
+    const halfWidth = 1.5 / this.fractalZoom;
+    const buf = createGraphics(SIZE, SIZE);
+    buf.pixelDensity(1);
+    buf.loadPixels();
+
+    const half = SIZE / 2;
+    for (let j = 0; j < SIZE; j++) {
+      for (let i = 0; i < SIZE; i++) {
+        const idx = 4 * (j * SIZE + i);
+        const dx = (i - half + 0.5) / half;
+        const dy = (j - half + 0.5) / half;
+
+        if (dx * dx + dy * dy > 1) {
+          buf.pixels[idx + 3] = 0;
+          continue;
+        }
+
+        // Center the set's visual midpoint (-0.5, 0) on the moon's center.
+        const cx = -0.5 + halfWidth * dx;
+        const cy = halfWidth * dy;
+
+        let zx = 0, zy = 0, iter = 0;
+        while (zx * zx + zy * zy < 4 && iter < MAX_ITER) {
+          const tmp = zx * zx - zy * zy + cx;
+          zy = 2 * zx * zy + cy;
+          zx = tmp;
+          iter++;
+        }
+
+        if (iter === MAX_ITER) {
+          buf.pixels[idx]     = contrast;
+          buf.pixels[idx + 1] = contrast;
+          buf.pixels[idx + 2] = contrast;
+          buf.pixels[idx + 3] = 255;
+        } else {
+          buf.pixels[idx + 3] = 0;
+        }
+      }
+    }
+    buf.updatePixels();
+    this.fractalBuffer = buf;
   }
 }
 
@@ -400,16 +475,17 @@ class CelestialTattoo {
 
   draw() {
     this.sun.draw();
-    this.moon.draw();
+    this.moon.drawFill();
+    this.moon.drawFractal();
     this.prism.draw();
   }
 }
 
 let tattoo;
 let controlPanel;
-let darkCheckbox, invertBodiesCheckbox, hideSunStrokeCheckbox;
-let tiltSlider, aimSlider, baseNSlider, spreadSlider, moonScaleSlider, moonAngleSlider, moonOffsetSlider;
-let tiltValue, aimValue, baseNValue, spreadValue, moonScaleValue, moonAngleValue, moonOffsetValue;
+let darkCheckbox, invertBodiesCheckbox, hideSunStrokeCheckbox, fractalCheckbox;
+let tiltSlider, aimSlider, baseNSlider, spreadSlider, moonScaleSlider, moonAngleSlider, moonOffsetSlider, fractalZoomSlider;
+let tiltValue, aimValue, baseNValue, spreadValue, moonScaleValue, moonAngleValue, moonOffsetValue, fractalZoomValue;
 
 const PRAYER = `Senhor, fazei-me instrumento de vossa paz
 Onde houver ódio, que eu leve o amor
@@ -457,6 +533,8 @@ function createControls() {
   invertBodiesCheckbox.changed(() => { INVERT_BODIES = invertBodiesCheckbox.checked(); });
   hideSunStrokeCheckbox = createCheckbox(" Hide sun outline", false).parent(toggleRow);
   hideSunStrokeCheckbox.changed(() => { HIDE_SUN_STROKE = hideSunStrokeCheckbox.checked(); });
+  fractalCheckbox = createCheckbox(" Fractal", true).parent(toggleRow);
+  fractalCheckbox.changed(() => { SHOW_FRACTAL = fractalCheckbox.checked(); });
 
   ({ slider: tiltSlider,      valueLabel: tiltValue }      = makeSlider(controlPanel, "Tilt (deg)",         -45,  45,   23,   1));
   ({ slider: aimSlider,       valueLabel: aimValue }       = makeSlider(controlPanel, "Aim fraction",       0.05, 0.95, 0.5,  0.01));
@@ -465,6 +543,7 @@ function createControls() {
   ({ slider: moonScaleSlider, valueLabel: moonScaleValue } = makeSlider(controlPanel, "Moon scale",         0.1,  1.0,  0.8,  0.01));
   ({ slider: moonAngleSlider, valueLabel: moonAngleValue } = makeSlider(controlPanel, "Moon angle (deg)",   0,    360,  180,  1));
   ({ slider: moonOffsetSlider,valueLabel: moonOffsetValue }= makeSlider(controlPanel, "Moon offset",        -300, 300,  0,    1));
+  ({ slider: fractalZoomSlider,valueLabel: fractalZoomValue}=makeSlider(controlPanel, "Fractal zoom",       0.3,  4.0,  1.0,  0.01));
 
   applyTheme();
 }
@@ -498,6 +577,7 @@ function draw() {
     spread:       spreadSlider.value()
   });
   tattoo.setMoon(moonScaleSlider.value(), moonAngleSlider.value(), moonOffsetSlider.value());
+  tattoo.moon.setFractalZoom(fractalZoomSlider.value());
   tiltValue.html(nf(tiltSlider.value(), 0, 0));
   aimValue.html(nf(aimSlider.value(), 0, 2));
   baseNValue.html(nf(baseNSlider.value(), 0, 3));
@@ -505,5 +585,6 @@ function draw() {
   moonScaleValue.html(nf(moonScaleSlider.value(), 0, 2));
   moonAngleValue.html(nf(moonAngleSlider.value(), 0, 0));
   moonOffsetValue.html(nf(moonOffsetSlider.value(), 0, 0));
+  fractalZoomValue.html(nf(fractalZoomSlider.value(), 0, 2));
   tattoo.draw();
 }
