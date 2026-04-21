@@ -822,3 +822,7 @@ function draw() {
   tattoo.sun.dotLineLenMul = dotLineLenSlider.value();
   tattoo.draw();
 }
+
+function keyPressed() {
+  if (key === "s" || key === "S") saveCanvas("tattoo", "png");
+}
