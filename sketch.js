@@ -14,6 +14,7 @@ let INVERT_BODIES = true;
 let HIDE_SUN_STROKE = true;
 let SHOW_FRACTAL = false;
 let SHOW_EYE = true;
+let MIRROR_EYE = true;
 
 class MorseEncoder {
   static encode(text) {
@@ -133,16 +134,21 @@ class Sun {
     this.packingFactor = 0.55;
 
     // Morse ray styling — all multipliers relative to the auto-sized dotSize.
-    this.dashLengthMul = 20;   // dash length = dotSize * dashLengthMul
-    this.strokeWMul    = 1.0;  // stroke weight = dotSize * strokeWMul
-    this.symbolGapMul  = 0.8;  // gap between symbols = dotSize * symbolGapMul
-    this.dotAsLine     = false;
-    this.dotLineLenMul = 0.5;  // when dotAsLine, dot becomes a line of length dotSize * this
+    this.dashLengthMul = 31.4;   // dash length = dotSize * dashLengthMul
+    this.strokeWMul    = 1.0;    // stroke weight = dotSize * strokeWMul
+    this.symbolGapMul  = 6.35;   // gap between symbols = dotSize * symbolGapMul
+    this.dotAsLine     = true;
+    this.dotLineLenMul = 10;     // when dotAsLine, dot becomes a line of length dotSize * this
   }
 
   draw() {
     this.drawBody();
     this.drawRays();
+  }
+
+  setMessage(message) {
+    this.message = message;
+    this.letters = this.#encodeLetters(message);
   }
 
   drawBody() {
@@ -168,9 +174,9 @@ class Sun {
 
     const arcPerRay = anglePerRay * innerRadius;
     const dotSize = arcPerRay * this.packingFactor;
-    const dashLength = dotSize * this.dashLengthMul;
     const strokeW = max(0.5, dotSize * this.strokeWMul);
     const symbolGap = dotSize * this.symbolGapMul;
+    const dashLength = dotSize * this.dashLengthMul;
     const dotLineLen = dotSize * this.dotLineLenMul;
 
     let angle = -HALF_PI;
@@ -178,6 +184,33 @@ class Sun {
       this.#drawRay(letter, angle, innerRadius, dotSize, dashLength, strokeW, symbolGap, dotLineLen);
       angle += anglePerRay;
     }
+  }
+
+  // For a given sun radius R, returns the distance (from sun center) that the
+  // longest Morse letter's rays would extend. Used by CelestialTattoo to pick
+  // a sun diameter that keeps everything inside the canvas.
+  maxRayRadius(R) {
+    if (this.letters.length === 0) return R;
+    const innerR = R + this.rayGap;
+    const arcPerRay = (TWO_PI / this.letters.length) * innerR;
+    const dotSize = arcPerRay * this.packingFactor;
+    const symbolGap = dotSize * this.symbolGapMul;
+    const dashLen = dotSize * this.dashLengthMul;
+    const dotLineLen = dotSize * this.dotLineLenMul;
+    const dotContrib = this.dotAsLine ? dotLineLen : dotSize;
+
+    let maxLen = 0;
+    for (const letter of this.letters) {
+      let len = 0;
+      for (let i = 0; i < letter.length; i++) {
+        const s = letter[i];
+        if (s === "-") len += dashLen;
+        else if (s === ".") len += dotContrib;
+        if (i < letter.length - 1) len += symbolGap;
+      }
+      if (len > maxLen) maxLen = len;
+    }
+    return innerR + maxLen + max(0.5, dotSize * this.strokeWMul);
   }
 
   #encodeLetters(text) {
@@ -233,6 +266,8 @@ class Prism {
     // entry point BACK toward the source; travel direction is the opposite.
     this.tiltDeg = 23;
     this.aimFraction = 0.5; // where on the left face the laser hits (0 = top, 1 = bottomLeft)
+    this.laserStrokeWeight = 5; // thickness of the incoming laser beam
+    this.laserOriginOffset = 10; // pixels to pull the laser's origin inward from the sun boundary
 
     this.baseN = 1.500;
     this.spread = 0.150;  // dispersion: n(violet) − n(red)
@@ -267,9 +302,11 @@ class Prism {
     this.bottomRight = { x: this.x + size / 2, y: this.y + h / 3 };
   }
 
-  update({ tiltDeg, aimFraction, baseN, spread }) {
+  update({ tiltDeg, aimFraction, baseN, spread, laserStrokeWeight, laserOriginOffset }) {
     if (tiltDeg !== undefined) this.tiltDeg = tiltDeg;
     if (aimFraction !== undefined) this.aimFraction = aimFraction;
+    if (laserStrokeWeight !== undefined) this.laserStrokeWeight = laserStrokeWeight;
+    if (laserOriginOffset !== undefined) this.laserOriginOffset = laserOriginOffset;
     const nChanged = (baseN !== undefined && baseN !== this.baseN) ||
                      (spread !== undefined && spread !== this.spread);
     if (baseN !== undefined) this.baseN = baseN;
@@ -333,10 +370,18 @@ class Prism {
     const aim = this.#aimPoint();
     const backDir = { x: cos(this.incomingAngle), y: sin(this.incomingAngle) };
     const origin = this.#rayToBoundary(aim, backDir);
+    // Pull the laser's origin inward along its travel direction so the beam
+    // starts a few pixels inside the sun instead of right at the boundary.
+    const dx = aim.x - origin.x, dy = aim.y - origin.y;
+    const len = Math.hypot(dx, dy);
+    const offset = Math.min(this.laserOriginOffset, max(0, len - 1));
+    const start = len > 0
+      ? { x: origin.x + (dx / len) * offset, y: origin.y + (dy / len) * offset }
+      : origin;
     push();
     stroke(INVERT_BODIES ? THEME.fg : THEME.bg);
-    strokeWeight(2);
-    line(origin.x, origin.y, aim.x, aim.y);
+    strokeWeight(this.laserStrokeWeight);
+    line(start.x, start.y, aim.x, aim.y);
     pop();
   }
 
@@ -347,6 +392,10 @@ class Prism {
     const N_right = this.#outwardNormal(this.top, this.bottomRight);
     const N_bottom = this.#outwardNormal(this.bottomLeft, this.bottomRight);
 
+    // Each wavelength traces its own path through the prism — internal
+    // refraction spreads them across a band on the exit face, and each
+    // colored ray emerges from its own exit point, aligned with the
+    // matching internal "middle light" line.
     const traces = this.spectrum.map(({ color, n }) => ({
       color,
       trace: this.#traceColor(entry, laserDir, n, N_left, N_right, N_bottom)
@@ -591,7 +640,7 @@ class EyeOfHorus {
 
     push();
     translate(this.cx, this.cy);
-    scale(s);
+    scale(MIRROR_EYE ? -s : s, s);
     translate(-svg.width / 2, -svg.height / 2);
 
     fill(color);
@@ -648,6 +697,42 @@ class CelestialTattoo {
     this.eye.setSize(size * 0.4);
   }
 
+  // Picks the largest sun diameter that keeps the longest Morse ray inside
+  // the given canvas radius. Rays scale with the sun (dotSize depends on
+  // diameter via the circumference packing), so the relationship is linear:
+  // maxRayRadius(R) = (R + rayGap) * (1 + K·F), where K is the per-letter
+  // packing coefficient and F is the longest-letter-length multiplier.
+  setSunDiameterForCanvas(canvasRadius) {
+    const sun = this.sun;
+    if (sun.letters.length === 0) {
+      this.setSunDiameter(canvasRadius * 2);
+      return;
+    }
+    const K = TWO_PI * sun.packingFactor / sun.letters.length;
+
+    let maxLetterFactor = 0;
+    for (const letter of sun.letters) {
+      let f = 0;
+      for (let i = 0; i < letter.length; i++) {
+        const s = letter[i];
+        if (s === "-") f += sun.dashLengthMul;
+        else if (s === ".") f += sun.dotAsLine ? sun.dotLineLenMul : 1;
+        if (i < letter.length - 1) f += sun.symbolGapMul;
+      }
+      if (f > maxLetterFactor) maxLetterFactor = f;
+    }
+
+    const C = 1 + K * (maxLetterFactor + sun.strokeWMul);
+    const R = canvasRadius / C - sun.rayGap;
+    this.setSunDiameter(Math.max(20, 2 * R));
+  }
+
+  setSunDiameter(d) {
+    this.sunDiameter = d;
+    this.sun.diameter = d;
+    this.prism.boundaryRadius = d / 2;
+  }
+
   setMoon(scale, angleDeg, offset) {
     const moonDiameter = this.sunDiameter * scale;
     const tangentOffset = (this.sunDiameter - moonDiameter) / 2;
@@ -669,12 +754,14 @@ class CelestialTattoo {
 
 let tattoo;
 let controlPanel;
-let darkCheckbox, invertBodiesCheckbox, hideSunStrokeCheckbox, fractalCheckbox, eyeCheckbox;
-let tiltSlider, aimSlider, baseNSlider, spreadSlider, prismSizeSlider, moonScaleSlider, moonAngleSlider, moonOffsetSlider, fractalZoomSlider;
-let tiltValue, aimValue, baseNValue, spreadValue, prismSizeValue, moonScaleValue, moonAngleValue, moonOffsetValue, fractalZoomValue;
+let darkCheckbox, invertBodiesCheckbox, hideSunStrokeCheckbox, fractalCheckbox, eyeCheckbox, mirrorEyeCheckbox;
+let tiltSlider, aimSlider, baseNSlider, spreadSlider, prismSizeSlider, laserWeightSlider, laserOffsetSlider, moonScaleSlider, moonAngleSlider, moonOffsetSlider, fractalZoomSlider;
+let tiltValue, aimValue, baseNValue, spreadValue, prismSizeValue, laserWeightValue, laserOffsetValue, moonScaleValue, moonAngleValue, moonOffsetValue, fractalZoomValue;
 let dashLengthSlider, strokeWSlider, symbolGapSlider, dotLineLenSlider;
 let dashLengthValue, strokeWValue, symbolGapValue, dotLineLenValue;
 let dotAsLineCheckbox;
+let messageTextarea;
+let saveButton;
 
 const PRAYER = `Senhor, fazei-me instrumento de vossa paz
 Onde houver ódio, que eu leve o amor
@@ -696,18 +783,35 @@ E é morrendo que se vive
 Para a vida eterna`;
 
 function setup() {
-  createCanvas(600, 600);
-  const size = min(width, height) * 0.6;
-  tattoo = new CelestialTattoo(width / 2, height / 2, size, PRAYER);
+  createCanvas(windowWidth, windowHeight);
+  rebuildTattoo();
   createControls();
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  rebuildTattoo();
+}
+
+function rebuildTattoo() {
+  const size = min(width, height) * 0.8;
+  tattoo = new CelestialTattoo(width / 2, height / 2, size, PRAYER);
 }
 
 function createControls() {
   controlPanel = createDiv()
     .style("padding", "12px")
     .style("font-family", "monospace")
-    .style("width", "600px")
-    .style("box-sizing", "border-box");
+    .style("width", "420px")
+    .style("box-sizing", "border-box")
+    .style("position", "fixed")
+    .style("top", "12px")
+    .style("right", "12px")
+    .style("max-height", "calc(100vh - 24px)")
+    .style("overflow-y", "auto")
+    .style("z-index", "10")
+    .style("border-radius", "4px")
+    .style("opacity", "0.92");
 
   const toggleRow = createDiv()
     .parent(controlPanel)
@@ -726,13 +830,45 @@ function createControls() {
   fractalCheckbox.changed(() => { SHOW_FRACTAL = fractalCheckbox.checked(); });
   eyeCheckbox = createCheckbox(" Eye of Horus", true).parent(toggleRow);
   eyeCheckbox.changed(() => { SHOW_EYE = eyeCheckbox.checked(); });
+  mirrorEyeCheckbox = createCheckbox(" Mirror eye", true).parent(toggleRow);
+  mirrorEyeCheckbox.changed(() => { MIRROR_EYE = mirrorEyeCheckbox.checked(); });
+
+  saveButton = createButton("Save PNG…")
+    .parent(toggleRow)
+    .style("background", "transparent")
+    .style("color", "inherit")
+    .style("border", "1px solid currentColor")
+    .style("border-radius", "3px")
+    .style("padding", "4px 10px")
+    .style("font-family", "monospace")
+    .style("cursor", "pointer")
+    .mousePressed(saveTattoo);
+
+  makeSection(controlPanel, "Message");
+  messageTextarea = createElement("textarea", PRAYER)
+    .parent(controlPanel)
+    .attribute("rows", "6")
+    .style("width", "100%")
+    .style("box-sizing", "border-box")
+    .style("background", "transparent")
+    .style("color", "inherit")
+    .style("border", "1px solid currentColor")
+    .style("border-radius", "3px")
+    .style("padding", "4px 6px")
+    .style("font-family", "monospace")
+    .style("font-size", "11px")
+    .style("resize", "vertical")
+    .style("margin-bottom", "6px");
+  messageTextarea.input(() => { tattoo.sun.setMessage(messageTextarea.value()); });
 
   makeSection(controlPanel, "Prism");
   ({ slider: tiltSlider,       input: tiltValue }       = makeControl(controlPanel, "Tilt (deg)",         -45,  45,   23,    1));
   ({ slider: aimSlider,        input: aimValue }        = makeControl(controlPanel, "Aim fraction",       0.05, 0.95, 0.5,   0.01));
   ({ slider: baseNSlider,      input: baseNValue }      = makeControl(controlPanel, "Base n",             1.30, 1.80, 1.500, 0.001));
-  ({ slider: spreadSlider,     input: spreadValue }     = makeControl(controlPanel, "Dispersion spread",  0,    0.15, 0.150, 0.001));
+  ({ slider: spreadSlider,     input: spreadValue }     = makeControl(controlPanel, "Dispersion spread",  0,    1.0,  0.150, 0.001));
   ({ slider: prismSizeSlider,  input: prismSizeValue }  = makeControl(controlPanel, "Size",               0.05, 0.8,  0.4,   0.01));
+  ({ slider: laserWeightSlider,input: laserWeightValue }= makeControl(controlPanel, "Laser stroke",       0.1,  10,   5,     0.1));
+  ({ slider: laserOffsetSlider,input: laserOffsetValue }= makeControl(controlPanel, "Laser start offset", 0,    200,  10,    1));
 
   makeSection(controlPanel, "Moon");
   ({ slider: moonScaleSlider,  input: moonScaleValue }  = makeControl(controlPanel, "Scale",              0.1,  1.0,  0.8,   0.01));
@@ -744,12 +880,12 @@ function createControls() {
 
   makeSection(controlPanel, "Morse Ray");
   const morseCheckRow = createDiv().parent(controlPanel).style("margin-bottom", "8px");
-  dotAsLineCheckbox = createCheckbox(" Dot as line", false).parent(morseCheckRow);
+  dotAsLineCheckbox = createCheckbox(" Dot as line", true).parent(morseCheckRow);
   dotAsLineCheckbox.changed(() => { tattoo.sun.dotAsLine = dotAsLineCheckbox.checked(); });
-  ({ slider: dashLengthSlider, input: dashLengthValue } = makeControl(controlPanel, "Dash length",          1,   40,  20,   0.1));
+  ({ slider: dashLengthSlider, input: dashLengthValue } = makeControl(controlPanel, "Dash length",          1,   40,  31.4, 0.1));
   ({ slider: strokeWSlider,    input: strokeWValue }    = makeControl(controlPanel, "Stroke weight",        0.1, 3,   1.0,  0.05));
-  ({ slider: symbolGapSlider,  input: symbolGapValue }  = makeControl(controlPanel, "Symbol gap",           0,   10,  0.8,  0.05));
-  ({ slider: dotLineLenSlider, input: dotLineLenValue } = makeControl(controlPanel, "Dot length (as line)", 0.1, 10,  0.5,  0.05));
+  ({ slider: symbolGapSlider,  input: symbolGapValue }  = makeControl(controlPanel, "Symbol gap",           0,   10,  6.35, 0.05));
+  ({ slider: dotLineLenSlider, input: dotLineLenValue } = makeControl(controlPanel, "Dot length (as line)", 0.1, 10,  10,   0.05));
 
   applyTheme();
 }
@@ -807,22 +943,61 @@ function makeControl(parent, label, mn, mx, val, step) {
 
 function draw() {
   background(THEME.bg);
-  tattoo.prism.update({
-    tiltDeg:      tiltSlider.value(),
-    aimFraction:  aimSlider.value(),
-    baseN:        baseNSlider.value(),
-    spread:       spreadSlider.value()
-  });
-  tattoo.setPrismSize(prismSizeSlider.value());
-  tattoo.setMoon(moonScaleSlider.value(), moonAngleSlider.value(), moonOffsetSlider.value());
-  tattoo.moon.setFractalZoom(fractalZoomSlider.value());
+
+  // 1. Push Morse ray params first — sun diameter depends on them.
   tattoo.sun.dashLengthMul = dashLengthSlider.value();
   tattoo.sun.strokeWMul    = strokeWSlider.value();
   tattoo.sun.symbolGapMul  = symbolGapSlider.value();
   tattoo.sun.dotLineLenMul = dotLineLenSlider.value();
+
+  // 2. Resize the sun so the longest ray stays inside the canvas.
+  const canvasRadius = min(tattoo.cx, width - tattoo.cx, tattoo.cy, height - tattoo.cy) - 4;
+  tattoo.setSunDiameterForCanvas(canvasRadius);
+
+  // 3. Now prism/moon sizes derive from the updated sunDiameter.
+  tattoo.prism.update({
+    tiltDeg:            tiltSlider.value(),
+    aimFraction:        aimSlider.value(),
+    baseN:              baseNSlider.value(),
+    spread:             spreadSlider.value(),
+    laserStrokeWeight:  laserWeightSlider.value(),
+    laserOriginOffset:  laserOffsetSlider.value()
+  });
+  tattoo.setPrismSize(prismSizeSlider.value());
+  tattoo.setMoon(moonScaleSlider.value(), moonAngleSlider.value(), moonOffsetSlider.value());
+  tattoo.moon.setFractalZoom(fractalZoomSlider.value());
+
   tattoo.draw();
 }
 
-function keyPressed() {
-  if (key === "s" || key === "S") saveCanvas("tattoo", "png");
+async function saveTattoo() {
+  const canvasEl = document.querySelector("canvas");
+  if (!canvasEl) return;
+  const blob = await new Promise(resolve => canvasEl.toBlob(resolve, "image/png"));
+  if (!blob) return;
+
+  if ("showSaveFilePicker" in window) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: "tattoo.png",
+        types: [{ description: "PNG image", accept: { "image/png": [".png"] } }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") return; // user cancelled
+      console.warn("Save-file picker unavailable, falling back to download:", err);
+    }
+  }
+  // Fallback for browsers without the File System Access API.
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "tattoo.png";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
