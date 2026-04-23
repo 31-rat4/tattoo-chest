@@ -1,14 +1,14 @@
 # Tattoo Chest
 
-A live p5.js sketch used as a **reference tool for a sternum-centered chest tattoo**. Every element is a parameter — the browser is the design surface, not a finished illustration.
+A live p5.js sketch used as a **reference tool for a chest tattoo**. Every element is a parameter — the browser is the design surface, not a finished illustration.
 
 ![Tattoo preview](tattoo.png)
 
-> If `tattoo.png` is missing or stale, open `index.html` in a browser and press `s` to save a fresh canvas snapshot next to `sketch.js`, then commit it.
+> If `tattoo.png` is missing or stale, open the sketch in a browser and use the **Save PNG…** button to save a fresh canvas snapshot next to `sketch.js`, then commit it.
 
 ## Proposition
 
-Three traditions threaded through one glyph, built to read cleanly at tattoo scale and centered on the sternum (so left-right symmetry matters):
+Three traditions threaded through one glyph:
 
 - **Franciscan** — the full Portuguese **Prayer of Saint Francis** is Morse-encoded, one letter per radial ray around the sun. The prayer is legible under magnification, not ornamental filler.
 - **Pink Floyd / Dark Side of the Moon** — a dispersion prism splits a white laser into a rainbow fan. Refraction is physically simulated (Snell's law, per-wavelength refractive index); the rainbow is the output of math, not art.
@@ -18,13 +18,13 @@ Tying them together: a sun + offset moon forming an eclipse, with an optional **
 
 ## Running
 
-No build step. Any static server works:
+No build step. Serve the directory with live-reload:
 
 ```bash
-bunx http-server .    # or python3 -m http.server, or open index.html directly in most setups
+npx browser-sync start --server --files "*.html, *.js, *.css"
 ```
 
-All state lives in sliders and checkboxes — tweak live, press `s` to export.
+All state lives in sliders and checkboxes — tweak live, hit **Save PNG…** to export.
 
 ## Project layout
 
@@ -32,7 +32,7 @@ All state lives in sliders and checkboxes — tweak live, press `s` to export.
 |---|---|
 | [`sketch.js`](sketch.js) | All code (p5 global mode, single file by design) |
 | [`index.html`](index.html) | Loads p5 CDN + `sketch.js` |
-| [`tattoo.png`](tattoo.png) | Current reference render (regenerated with `s`) |
+| [`tattoo.png`](tattoo.png) | Current reference render (regenerated via **Save PNG…**) |
 | `.claude/plans/` | In-progress plan files from Claude Code sessions (gitignored) |
 
 ## Architecture
@@ -62,7 +62,7 @@ Two globals drive color: `THEME = { bg, fg }` and `INVERT_BODIES`. **All drawing
 
 Every slider has a paired `<input type="number">`; they two-way sync via `slider.input()` / `input.input()` so typing a value works identically to dragging.
 
-Press `s` at any time to export the current canvas as `tattoo.png`.
+Click **Save PNG…** in the top-right panel to export the current canvas (uses the browser's File System Access API when available so you choose the save location, otherwise falls back to a download).
 
 ## Conventions for agents editing this repo
 
