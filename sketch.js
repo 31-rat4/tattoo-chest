@@ -17,6 +17,7 @@ let SHOW_EYE = true;
 let MIRROR_EYE = true;
 let SHOW_OUTER_LETTERS = true;
 let SHOW_RAINBOW_RAYS = true;
+let SHOW_RAY_SEGREGATION = false;
 const OUTER_LETTER_RING = 32; // pixel width reserved for the letter ring when enabled
 
 // Given the rainbow's external-end samples ({angle, color}) and a ray angle
@@ -178,6 +179,10 @@ class Sun {
     this.symbolGapMul  = 6.35;   // gap between symbols = dotSize * symbolGapMul
     this.dotAsLine     = true;
     this.dotLineLenMul = 10;     // when dotAsLine, dot becomes a line of length dotSize * this
+
+    this.segregationAngleDeg    = 90;   // center of first gap (degrees)
+    this.segregationSizeDeg     = 30;   // full angular width of each gap (degrees)
+    this.segregationProximityDeg = 180; // angular separation between the two gap centers
   }
 
   draw() {
@@ -234,11 +239,11 @@ class Sun {
     const dashLength = dotSize * this.dashLengthMul;
     const dotLineLen = dotSize * this.dotLineLenMul;
 
-    let angle = -HALF_PI;
-    for (const letter of this.letters) {
+    const angles = this.#computeRayAngles();
+    for (let i = 0; i < this.letters.length; i++) {
+      const angle = angles[i];
       const rayColor = this.rainbowSamples ? colorAtAngle(angle, this.rainbowSamples) : null;
-      this.#drawRay(letter, angle, innerRadius, dotSize, dashLength, strokeW, symbolGap, dotLineLen, rayColor);
-      angle += anglePerRay;
+      this.#drawRay(this.letters[i], angle, innerRadius, dotSize, dashLength, strokeW, symbolGap, dotLineLen, rayColor);
     }
   }
 
@@ -293,16 +298,87 @@ class Sun {
     textSize(fontSize);
     noStroke();
 
-    const anglePerRay = TWO_PI / this.letterChars.length;
-    let angle = -HALF_PI;
-    for (const ch of this.letterChars) {
+    const angles = this.#computeRayAngles();
+    for (let i = 0; i < this.letterChars.length; i++) {
+      const angle = angles[i];
       const c = this.rainbowSamples ? colorAtAngle(angle, this.rainbowSamples) : null;
       if (c) fill(c[0], c[1], c[2]);
       else fill(THEME.fg);
-      text(ch, this.x + letterRadius * cos(angle), this.y + letterRadius * sin(angle));
-      angle += anglePerRay;
+      text(this.letterChars[i], this.x + letterRadius * cos(angle), this.y + letterRadius * sin(angle));
     }
     pop();
+  }
+
+  // Returns an array of N actual angles (radians) for rays/letters.
+  // When segregation is off: uniform spacing starting at -HALF_PI.
+  // When segregation is on: all N rays compressed into the non-gap arcs so
+  // no letter is removed — gaps are created by clustering, not by deletion.
+  #computeRayAngles() {
+    const N = this.letters.length;
+    if (N === 0) return [];
+    if (!SHOW_RAY_SEGREGATION || this.segregationSizeDeg <= 0) {
+      return Array.from({ length: N }, (_, i) => -HALF_PI + i * (TWO_PI / N));
+    }
+
+    const halfGap = radians(this.segregationSizeDeg) / 2;
+    const gapRad  = halfGap * 2;
+    const c1 = radians(this.segregationAngleDeg);
+    const c2 = c1 + radians(this.segregationProximityDeg);
+
+    // Work in relative coords: 0 = -HALF_PI, spanning [0, 2π).
+    const toRel = a => ((a + HALF_PI) % TWO_PI + TWO_PI) % TWO_PI;
+
+    // Build gap intervals; split any that wrap past 2π into two pieces.
+    const gapIntervals = [];
+    for (const center of [c1, c2]) {
+      const s = toRel(center - halfGap);
+      const e = s + gapRad;
+      if (e > TWO_PI) {
+        gapIntervals.push({ s, e: TWO_PI });
+        gapIntervals.push({ s: 0, e: e - TWO_PI });
+      } else {
+        gapIntervals.push({ s, e });
+      }
+    }
+    gapIntervals.sort((a, b) => a.s - b.s);
+
+    // Merge overlapping intervals.
+    const merged = [];
+    for (const iv of gapIntervals) {
+      if (merged.length === 0 || iv.s > merged[merged.length - 1].e) {
+        merged.push({ s: iv.s, e: iv.e });
+      } else {
+        merged[merged.length - 1].e = Math.max(merged[merged.length - 1].e, iv.e);
+      }
+    }
+
+    // Build available arc segments (the complement of gap intervals in [0, 2π)).
+    const segs = [];
+    let pos = 0;
+    for (const gap of merged) {
+      if (gap.s > pos) segs.push({ start: pos, len: gap.s - pos });
+      pos = gap.e;
+    }
+    if (pos < TWO_PI) segs.push({ start: pos, len: TWO_PI - pos });
+
+    const validSegs = segs.filter(s => s.len > 1e-9);
+    const totalAvail = validSegs.reduce((sum, s) => sum + s.len, 0);
+
+    if (totalAvail <= 0) {
+      return Array.from({ length: N }, (_, i) => -HALF_PI + i * (TWO_PI / N));
+    }
+
+    const step = totalAvail / N;
+    return Array.from({ length: N }, (_, i) => {
+      const tgt = i * step;
+      let acc = 0;
+      for (const seg of validSegs) {
+        if (tgt < acc + seg.len) return -HALF_PI + seg.start + (tgt - acc);
+        acc += seg.len;
+      }
+      const last = validSegs[validSegs.length - 1];
+      return -HALF_PI + last.start + last.len;
+    });
   }
 
   #drawRay(letterMorse, angle, innerRadius, dotSize, dashLength, strokeW, symbolGap, dotLineLen, rayColor) {
@@ -872,6 +948,9 @@ let tiltValue, aimValue, baseNValue, spreadValue, prismSizeValue, laserWeightVal
 let dashLengthSlider, strokeWSlider, symbolGapSlider, dotLineLenSlider;
 let dashLengthValue, strokeWValue, symbolGapValue, dotLineLenValue;
 let dotAsLineCheckbox;
+let raySegregationCheckbox;
+let segregationAngleSlider, segregationSizeSlider, segregationProximitySlider;
+let segregationAngleValue, segregationSizeValue, segregationProximityValue;
 let messageTextarea;
 let saveButton;
 
@@ -998,10 +1077,15 @@ function createControls() {
   const morseCheckRow = createDiv().parent(controlPanel).style("margin-bottom", "8px");
   dotAsLineCheckbox = createCheckbox(" Dot as line", true).parent(morseCheckRow);
   dotAsLineCheckbox.changed(() => { tattoo.sun.dotAsLine = dotAsLineCheckbox.checked(); });
+  raySegregationCheckbox = createCheckbox(" Ray segregation", false).parent(morseCheckRow);
+  raySegregationCheckbox.changed(() => { SHOW_RAY_SEGREGATION = raySegregationCheckbox.checked(); });
   ({ slider: dashLengthSlider, input: dashLengthValue } = makeControl(controlPanel, "Dash length",          1,   40,  31.4, 0.1));
   ({ slider: strokeWSlider,    input: strokeWValue }    = makeControl(controlPanel, "Stroke weight",        0.1, 3,   1.0,  0.05));
   ({ slider: symbolGapSlider,  input: symbolGapValue }  = makeControl(controlPanel, "Symbol gap",           0,   10,  6.35, 0.05));
-  ({ slider: dotLineLenSlider, input: dotLineLenValue } = makeControl(controlPanel, "Dot length (as line)", 0.1, 10,  10,   0.05));
+  ({ slider: dotLineLenSlider,       input: dotLineLenValue }       = makeControl(controlPanel, "Dot length (as line)", 0.1, 10,  10,   0.05));
+  ({ slider: segregationAngleSlider,     input: segregationAngleValue }     = makeControl(controlPanel, "Seg. angle (deg)",     0,   360, 90,   1));
+  ({ slider: segregationSizeSlider,      input: segregationSizeValue }      = makeControl(controlPanel, "Seg. size (deg)",      0,   90,  30,   0.5));
+  ({ slider: segregationProximitySlider, input: segregationProximityValue } = makeControl(controlPanel, "Seg. proximity (deg)", 0,   360, 180,  1));
 
   applyTheme();
 }
@@ -1061,10 +1145,13 @@ function draw() {
   background(THEME.bg);
 
   // 1. Push Morse ray params first — sun diameter depends on them.
-  tattoo.sun.dashLengthMul = dashLengthSlider.value();
-  tattoo.sun.strokeWMul    = strokeWSlider.value();
-  tattoo.sun.symbolGapMul  = symbolGapSlider.value();
-  tattoo.sun.dotLineLenMul = dotLineLenSlider.value();
+  tattoo.sun.dashLengthMul       = dashLengthSlider.value();
+  tattoo.sun.strokeWMul          = strokeWSlider.value();
+  tattoo.sun.symbolGapMul        = symbolGapSlider.value();
+  tattoo.sun.dotLineLenMul       = dotLineLenSlider.value();
+  tattoo.sun.segregationAngleDeg     = segregationAngleSlider.value();
+  tattoo.sun.segregationSizeDeg      = segregationSizeSlider.value();
+  tattoo.sun.segregationProximityDeg = segregationProximitySlider.value();
 
   // 2. Resize the sun so the longest ray stays inside the canvas. Reserve
   //    an outer ring for the alphabetic letters when that toggle is on.
