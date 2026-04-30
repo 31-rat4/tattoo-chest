@@ -1,5 +1,7 @@
 # Tattoo Chest
 
+> **Live:** https://31-rat4.github.io/tattoo-chest/
+
 A live p5.js sketch used as a **reference tool for a chest tattoo**. Every element is a parameter — the browser is the design surface, not a finished illustration.
 
 ![Tattoo preview](tattoo.png)
